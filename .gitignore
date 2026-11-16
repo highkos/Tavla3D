@@ -1,0 +1,68 @@
+# Unity üretimi / önbellek
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+/TestResults/
+/CodeCoverage/
+/artifacts/
+
+# Unity tarafından üretilen proje dosyaları (her açılışta yeniden yazılır)
+/*.csproj
+/*.sln
+/*.slnx
+/*.unityproj
+/*.suo
+/*.user
+/*.userprefs
+/*.pidb
+/*.booproj
+/*.svd
+/*.pdb
+/*.mdb
+/*.opendb
+/*.VC.db
+/*.vsidx
+
+# Visual Studio / Rider / VS Code
+/.vs/
+/.idea/
+/.vscode/
+*.DotSettings.user
+*.csproj.user
+
+# Derleme çıktıları
+*.apk
+*.aab
+*.unitypackage
+*.app
+*.exe
+*.pdb
+*.mdb
+*.dll.mdb
+*.so.mdb
+crashlytics-build.properties
+sysinfo.txt
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Yerel sırlar — asla commit edilmez
+*.secret
+*.secrets
+secrets.json
+appsettings.Secrets.json
+.env
+.env.*
+!.env.example
+
+# Unity Accelerator / Cache Server
+/[Aa]ssets/[Ss]treamingAssets/aa.meta
+/[Aa]ssets/[Ss]treamingAssets/aa/*

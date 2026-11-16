@@ -1,0 +1,29 @@
+{
+	"name": "TavlaAI.Online.Tests.PlayMode",
+	"rootNamespace": "TavlaAI.Online.Tests",
+	"references": [
+		"TavlaAI.Runtime",
+		"TavlaAI.Online",
+		"UnityEngine.TestRunner",
+		"UnityEditor.TestRunner"
+	],
+	"includePlatforms": [],
+	"excludePlatforms": [],
+	"allowUnsafeCode": false,
+	"overrideReferences": true,
+	"precompiledReferences": [
+		"nunit.framework.dll",
+		"Backgammon.Core.dll",
+		"Backgammon.UI.dll",
+		"Backgammon.Contracts.dll",
+		"Backgammon.Rules.dll",
+		"Backgammon.Rules.TavlaAI.dll",
+		"Backgammon.Client.dll"
+	],
+	"autoReferenced": false,
+	"defineConstraints": [
+		"UNITY_INCLUDE_TESTS"
+	],
+	"versionDefines": [],
+	"noEngineReferences": false
+}

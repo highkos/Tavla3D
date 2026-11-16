@@ -1,0 +1,13 @@
+fileFormatVersion: 2
+guid: e3f101fbfad641d0af40faf557ca5147
+labels: []
+PluginImporter:
+  platformData:
+  - first:
+      : Any
+    second:
+      enabled: 0
+  - first:
+      Any:
+    second:
+      enabled: 0

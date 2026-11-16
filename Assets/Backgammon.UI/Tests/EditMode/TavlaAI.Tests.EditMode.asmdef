@@ -1,0 +1,28 @@
+{
+    "name": "TavlaAI.Tests.EditMode",
+    "rootNamespace": "TavlaAI.Tests",
+    "references": [
+        "TavlaAI.Runtime",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll",
+        "Backgammon.Core.dll",
+        "Backgammon.Inference.dll",
+        "Backgammon.UI.dll",
+        "Microsoft.ML.OnnxRuntime.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

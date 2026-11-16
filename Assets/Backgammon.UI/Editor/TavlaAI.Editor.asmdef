@@ -1,0 +1,19 @@
+{
+    "name": "TavlaAI.Editor",
+    "rootNamespace": "TavlaAI.Editor",
+    "references": [
+        "TavlaAI.Runtime",
+        "TavlaAI.Online"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

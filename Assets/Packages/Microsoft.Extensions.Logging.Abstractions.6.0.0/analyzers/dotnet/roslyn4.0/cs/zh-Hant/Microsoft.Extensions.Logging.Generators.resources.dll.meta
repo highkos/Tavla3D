@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 51da90b93fab4374b1a98d2fd532d6a6
+labels:
+- RoslynAnalyzer
+PluginImporter:
+  platformData:
+  - first:
+      : Any
+    second:
+      enabled: 0
+  - first:
+      Any:
+    second:
+      enabled: 0

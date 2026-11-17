@@ -5,6 +5,7 @@ using Backgammon.Client;
 using Backgammon.Contracts.Dto;
 using Backgammon.Contracts.Protocol;
 using Backgammon.Core;
+using Backgammon.UI;
 using Cysharp.Net.Http;
 using TavlaAI.Bootstrap;
 using TavlaAI.Infrastructure;
@@ -42,6 +43,9 @@ namespace TavlaAI.Online
         public const string DefaultServerAddress = "https://game.koseli.com.tr:5002";
 
         private const string DeviceIdPrefsKey = "tavla.online.deviceId";
+
+        /// <summary>Status shown while the server waits to auto-pass a blocked turn.</summary>
+        private const string NoLegalMovesStatus = "Girecek kapi yok - sira geciyor";
 
         [SerializeField]
         [Tooltip("Sunucu adresi. Canlida https:// (TLS + HTTP/2) olmalidir.")]
@@ -569,6 +573,25 @@ namespace TavlaAI.Online
             BackgammonState engine = OnlineBoardAdapter.FromState(state, _bootstrap.HumanPlayer);
             _bootstrap.SetOnlineInputLocked(_submitting);
             _bootstrap.ApplyOnlineState(engine);
+
+            // The server auto-passes a turn whose player has no legal move at all
+            // (e.g. on the bar against a closed home board). The client never
+            // submits an empty turn itself; it only explains the waiting.
+            GameOrchestrator orchestrator = _bootstrap.Orchestrator;
+            bool blockedByOpponent = state.Phase == MatchPhase.Playing &&
+                                     orchestrator != null &&
+                                     orchestrator.State.turn == _bootstrap.HumanPlayer &&
+                                     orchestrator.State.phase == GamePhase.Moving &&
+                                     orchestrator.State.remainingCount > 0 &&
+                                     !orchestrator.HasLegalMoves;
+            if (blockedByOpponent)
+            {
+                SetStatus(NoLegalMovesStatus);
+            }
+            else if (_status == NoLegalMovesStatus)
+            {
+                SetStatus(string.Empty);
+            }
         }
 
         // ---------------------------------------------------------------- ui

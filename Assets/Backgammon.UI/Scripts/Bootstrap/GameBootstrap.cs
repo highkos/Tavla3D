@@ -616,6 +616,11 @@ namespace TavlaAI.Bootstrap
             if (_gameMode == GameMode.Online)
             {
                 // Sunucu yetkili: hamle once sunucuya gonderilir, tahta yanitla guncellenir.
+                // Iyimser uygulama sart: kismi hamle onizlemesi temizlendiginde tahta gercek
+                // durumdan yeniden cizilir; hamle yerel duruma yazilmazsa tas bir an eski
+                // hanesine sicrar ve sunucu yaniti gelince yeniden hedefe gider.
+                _orchestrator.ApplyMoveOptimistic(move);
+
                 Action<MoveSequence> handler = OnlineMoveCommitted;
                 if (handler != null)
                 {
@@ -794,9 +799,25 @@ namespace TavlaAI.Bootstrap
             MatchScoreView.Refresh(_matchModel);
             CrawfordBadgeView.Refresh(_matchModel);
 
-            PositionAnalysis analysis = _orchestrator.AnalyzeCurrent();
-            _analysisModel.Update(analysis);
-            AnalysisPanelView.Refresh(_analysisModel);
+            // Oyun bittiginde analiz anlamsizdir ve terminal pozisyon degerlendiriciye
+            // gonderilemez (vektorlestirici terminal kaydi reddeder). Cevrimici oyunda
+            // kazanan hamleden sonra faz bir an "Moving" kalabildigi icin burada da
+            // koruma gerekir; aksi halde mac bitince istisna firlar.
+            if (state.phase != GamePhase.GameOver)
+            {
+                try
+                {
+                    PositionAnalysis analysis = _orchestrator.AnalyzeCurrent();
+                    _analysisModel.Update(analysis);
+                    AnalysisPanelView.Refresh(_analysisModel);
+                }
+                catch (Exception ex)
+                {
+                    // Analiz yalnizca bilgilendiricidir; basarisiz olmasi oyun akisini
+                    // (sira, giris kilidi, mac sonu) engellememelidir.
+                    Debug.LogWarning("[TavlaAI] pozisyon analizi atlandi: " + ex.Message);
+                }
+            }
 
             InputController.IsLocked = _onlineInputLocked ||
                                        state.turn != HumanPlayer ||

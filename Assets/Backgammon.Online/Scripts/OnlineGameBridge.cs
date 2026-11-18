@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Backgammon.Client;
@@ -47,9 +48,30 @@ namespace TavlaAI.Online
         /// <summary>Status shown while the server waits to auto-pass a blocked turn.</summary>
         private const string NoLegalMovesStatus = "Girecek kapi yok - sira geciyor";
 
+        /// <summary>
+        /// Rakibin zarlarinin ekranda kaldigi sure (saniye).
+        /// </summary>
+        /// <remarks>
+        /// Sunucu rakibin turunu neredeyse aninda oynar; <c>TurnStarted</c> ve
+        /// <c>TurnApplied</c> olaylari milisaniyeler arayla gelir. Bu bekleme olmadan
+        /// oyuncu rakibin ne attigini hic goremez.
+        /// </remarks>
+        private const float OpponentDiceSeconds = 1.6f;
+
+        /// <summary>Kuyrukta tutulacak en fazla yetkili durum sayisi.</summary>
+        private const int MaxQueuedStates = 8;
+
+        /// <summary>Istemci kapatma ve hamle gonderimi icin ust sinir.</summary>
+        private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
+
+        /// <summary>Hamle gonderimi bu sureden uzun surerse giris kilidi zorla acilir.</summary>
+        private const float SubmitWatchdogSeconds = 25f;
+
         [SerializeField]
         [Tooltip("Sunucu adresi. Canlida https:// (TLS + HTTP/2) olmalidir.")]
         private string _serverAddress = DefaultServerAddress;
+
+        private readonly Queue<MatchStateDto> _incoming = new Queue<MatchStateDto>(MaxQueuedStates);
 
         private BackgammonClient _client;
         private Stage2Clients _stage2;
@@ -57,6 +79,9 @@ namespace TavlaAI.Online
         private GameBootstrap _bootstrap;
         private bool _busy;
         private bool _submitting;
+        private float _submitStartedAt;
+        private float _holdUntil;
+        private int _appliedVersion = -1;
         private string _status = "Cevrimdisi";
         private Text _statusLabel;
         private Button _connectButton;
@@ -181,6 +206,70 @@ namespace TavlaAI.Online
             DisposeClientAsync().GetAwaiter().GetResult();
         }
 
+        private void Update()
+        {
+            PumpStates();
+            UpdateSubmitWatchdog();
+        }
+
+        /// <summary>
+        /// <see cref="GameBootstrap"/> yok edilip yeniden olusturulduysa baglantiyi tazeler.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="GameBootstrap"/> <c>DontDestroyOnLoad</c> oldugu icin normalde yasamaya
+        /// devam eder; ancak uygulama kapanip acildiginda veya sahne elle yeniden kuruldugunda
+        /// eski referans yok edilmis bir nesneyi gosterir ve tahta <b>sessizce</b> guncellenmez.
+        /// </remarks>
+        private GameBootstrap Bootstrap
+        {
+            get
+            {
+                if (_bootstrap == null)
+                {
+                    _bootstrap = GameBootstrap.Instance;
+                    if (_bootstrap != null)
+                    {
+                        _bootstrap.OnlineMoveCommitted -= OnOnlineMoveCommitted;
+                        _bootstrap.OnlineMoveCommitted += OnOnlineMoveCommitted;
+                    }
+                }
+
+                return _bootstrap;
+            }
+        }
+
+        /// <summary>
+        /// Hamle gonderimi beklenenden uzun surduyse giris kilidini zorla acar.
+        /// </summary>
+        /// <remarks>
+        /// <c>SubmitTurnAsync</c> kendi zaman asimina sahiptir; yine de baglanti yarida
+        /// koparsa <c>async void</c> zinciri tamamlanmayabilir ve oyuncu sonsuza kadar
+        /// kilitli kalir. Bu bekci o durumu kurtarir.
+        /// </remarks>
+        private void UpdateSubmitWatchdog()
+        {
+            if (!_submitting || _submitStartedAt <= 0f)
+            {
+                return;
+            }
+
+            if (Time.unscaledTime - _submitStartedAt < SubmitWatchdogSeconds)
+            {
+                return;
+            }
+
+            _submitStartedAt = 0f;
+            _submitting = false;
+            GameBootstrap bootstrap = Bootstrap;
+            if (bootstrap != null)
+            {
+                bootstrap.SetOnlineInputLocked(false);
+            }
+
+            SetStatus("Hamle zaman asimi - yeniden deneyin");
+            Debug.LogWarning("[TavlaAI.Online] hamle gonderimi zaman asimina ugradi; giris kilidi acildi.");
+        }
+
         // ---------------------------------------------------------------- IOnlineGame
 
         /// <inheritdoc />
@@ -224,9 +313,15 @@ namespace TavlaAI.Online
                 return;
             }
 
+            // Yeni/yeniden kurulan oturumda onceki oturumdan kalan kilitler tasinmamali.
+            _submitting = false;
+            _submitStartedAt = 0f;
+            _busy = false;
+
             Snapshot = snapshot;
             ApplySnapshot(snapshot);
             SetStatus("Mac basladi");
+            UpdateButtons();
         }
 
         /// <inheritdoc />
@@ -261,13 +356,16 @@ namespace TavlaAI.Online
                     break;
             }
 
-            if (snapshot != null)
+            // Olayin kendi durumu varsa o kullanilir: anlik goruntu (snapshot) her olayda
+            // ayni nesnedir ve olay sirasini korumaz. Boylece rakibin zari once gosterilip
+            // ardindan hamlesi uygulanabilir.
+            if (matchEvent.State != null)
+            {
+                EnqueueState(matchEvent.State);
+            }
+            else if (snapshot != null)
             {
                 ApplySnapshot(snapshot);
-            }
-            else if (matchEvent.State != null)
-            {
-                ApplyState(matchEvent.State);
             }
         }
 
@@ -372,23 +470,27 @@ namespace TavlaAI.Online
 
         private async Task GoOfflineAsync()
         {
-            if (_busy)
-            {
-                return;
-            }
-
+            // Cikis her zaman calismali. Onceki surumde `_busy` iken erken donuluyordu;
+            // kapanma takildiginda dugme tamamen olu kaliyor ve oyuncu cevrimici moddan
+            // cikamiyordu.
             _busy = true;
             UpdateButtons();
             try
             {
                 await DisposeClientAsync();
 
-                if (_bootstrap != null)
+                GameBootstrap bootstrap = Bootstrap;
+                if (bootstrap != null)
                 {
-                    _bootstrap.SetGameMode(GameMode.Local);
-                    _bootstrap.SetOnlineInputLocked(false);
+                    bootstrap.SetGameMode(GameMode.Local);
+                    bootstrap.SetOnlineInputLocked(false);
                 }
 
+                SetStatus("Cevrimdisi");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[TavlaAI.Online] cevrimdisi gecisi: " + ex);
                 SetStatus("Cevrimdisi");
             }
             finally
@@ -400,24 +502,47 @@ namespace TavlaAI.Online
 
         private async void OnOnlineMoveCommitted(MoveSequence move)
         {
-            if (_client == null || Snapshot == null || _submitting || move.IsEmpty)
+            if (move.IsEmpty)
             {
                 return;
             }
 
-            _submitting = true;
-            if (_bootstrap != null)
+            if (_submitting)
             {
-                _bootstrap.SetOnlineInputLocked(true);
+                return;
+            }
+
+            CancellationTokenSource cts = _cts;
+            if (_client == null || cts == null)
+            {
+                SetStatus("Baglanti yok - yeniden baglaniyor");
+                await ResyncAsync();
+                return;
+            }
+
+            if (Snapshot == null)
+            {
+                // Mac goruntusu dusmusse hamleyi sessizce yutmak yerine tazele.
+                SetStatus("Durum eskimis - yeniden senkronize ediliyor");
+                await ResyncAsync();
+                return;
+            }
+
+            _submitting = true;
+            _submitStartedAt = Time.unscaledTime;
+            GameBootstrap bootstrap = Bootstrap;
+            if (bootstrap != null)
+            {
+                bootstrap.SetOnlineInputLocked(true);
             }
 
             try
             {
                 MoveDto[] moves = OnlineBoardAdapter.ToMoves(move);
-                TurnResultDto result = await _client.SubmitTurnAsync(moves, _cts.Token);
+                TurnResultDto result = await _client.SubmitTurnAsync(moves, cts.Token);
                 if (result != null && result.State != null)
                 {
-                    ApplyState(result.State);
+                    EnqueueState(result.State);
                 }
             }
             catch (OperationCanceledException)
@@ -432,9 +557,10 @@ namespace TavlaAI.Online
             finally
             {
                 _submitting = false;
-                if (_bootstrap != null)
+                _submitStartedAt = 0f;
+                if (bootstrap != null)
                 {
-                    _bootstrap.SetOnlineInputLocked(false);
+                    bootstrap.SetOnlineInputLocked(false);
                 }
             }
         }
@@ -448,7 +574,7 @@ namespace TavlaAI.Online
 
             try
             {
-                MatchSnapshotDto snapshot = await _client.RequestSnapshotAsync(_cts.Token);
+                MatchSnapshotDto snapshot = await _client.RequestSnapshotAsync(CurrentToken);
                 if (snapshot != null)
                 {
                     Snapshot = snapshot;
@@ -458,6 +584,28 @@ namespace TavlaAI.Online
             catch (Exception ex)
             {
                 Debug.LogWarning("[TavlaAI.Online] yeniden senkronizasyon basarisiz: " + ex.Message);
+            }
+        }
+
+        /// <summary>Etkin istemcinin iptal belirteci; istemci yoksa <see cref="CancellationToken.None"/>.</summary>
+        private CancellationToken CurrentToken
+        {
+            get
+            {
+                CancellationTokenSource cts = _cts;
+                if (cts == null)
+                {
+                    return CancellationToken.None;
+                }
+
+                try
+                {
+                    return cts.Token;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return CancellationToken.None;
+                }
             }
         }
 
@@ -504,36 +652,61 @@ namespace TavlaAI.Online
                 _cts = null;
             }
 
-            if (_stage2 != null)
+            Stage2Clients stage2 = _stage2;
+            _stage2 = null;
+            if (stage2 != null)
             {
                 try
                 {
-                    await _stage2.DisposeAsync();
+                    await WithTimeoutAsync(stage2.DisposeAsync().AsTask()).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
                     Debug.LogWarning("[TavlaAI.Online] stage2 kapatma: " + ex.Message);
                 }
-
-                _stage2 = null;
             }
 
-            if (_client != null)
+            BackgammonClient client = _client;
+            _client = null;
+            if (client != null)
             {
                 try
                 {
-                    await _client.DisposeAsync();
+                    await WithTimeoutAsync(client.DisposeAsync().AsTask()).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
+                    // Kapanma takilirsa (olu baglanti, sunucu yanit vermiyor) UI kilitli
+                    // kalmamali; istemci referansi zaten birakildi.
                     Debug.LogWarning("[TavlaAI.Online] istemci kapatma: " + ex.Message);
                 }
-
-                _client = null;
             }
 
+            _incoming.Clear();
+            _holdUntil = 0f;
+            _appliedVersion = -1;
+            _submitting = false;
+            _submitStartedAt = 0f;
             Snapshot = null;
             ConnectionState = ConnectionState.Disconnected;
+        }
+
+        /// <summary>
+        /// <paramref name="task"/> en gec <see cref="ShutdownTimeout"/> icinde tamamlanir;
+        /// aksi halde <see cref="TimeoutException"/> firlatir.
+        /// </summary>
+        /// <remarks>
+        /// <c>Task.WaitAsync</c> netstandard2.1'de yok (Unity'nin kullandigi profil).
+        /// </remarks>
+        private static async Task WithTimeoutAsync(Task task)
+        {
+            Task completed = await Task.WhenAny(task, Task.Delay(ShutdownTimeout)).ConfigureAwait(false);
+            if (!ReferenceEquals(completed, task))
+            {
+                throw new TimeoutException("Islem " + ShutdownTimeout.TotalSeconds + " sn icinde tamamlanmadi.");
+            }
+
+            await task.ConfigureAwait(false);
         }
 
         private static string ResolveDeviceId()
@@ -553,34 +726,142 @@ namespace TavlaAI.Online
 
         private void ApplySnapshot(MatchSnapshotDto snapshot)
         {
-            if (_bootstrap == null || snapshot == null)
+            GameBootstrap bootstrap = Bootstrap;
+            if (bootstrap == null || snapshot == null)
             {
                 return;
             }
 
-            _bootstrap.SetGameMode(GameMode.Online);
-            _bootstrap.SetHumanPlayer(snapshot.YouAreWhite ? (sbyte)1 : (sbyte)-1);
-            ApplyState(snapshot.State);
+            bootstrap.SetGameMode(GameMode.Online);
+            bootstrap.SetHumanPlayer(snapshot.YouAreWhite ? (sbyte)1 : (sbyte)-1);
+
+            // Tam anlik goruntu yetkilidir; kuyrukta bekleyen eski durumlar gecersizdir.
+            _incoming.Clear();
+            _holdUntil = 0f;
+            if (bootstrap.DiceView != null)
+            {
+                bootstrap.DiceView.ClearCaption();
+            }
+
+            ApplyStateNow(snapshot.State);
         }
 
-        private void ApplyState(MatchStateDto state)
+        /// <summary>
+        /// Yetkili durumu kuyruga alir; gercek uygulama <see cref="PumpStates"/> icinde olur.
+        /// </summary>
+        /// <remarks>
+        /// Kuyruk, rakibin zarinin ekranda kalmasini saglar: sunucu rakibin turunu neredeyse
+        /// aninda oynadigi icin <c>TurnStarted</c> ve <c>TurnApplied</c> arasinda gorsel fark
+        /// olusmuyordu.
+        /// </remarks>
+        private void EnqueueState(MatchStateDto state)
         {
-            if (_bootstrap == null || state == null)
+            if (state == null)
             {
                 return;
             }
 
-            BackgammonState engine = OnlineBoardAdapter.FromState(state, _bootstrap.HumanPlayer);
-            _bootstrap.SetOnlineInputLocked(_submitting);
-            _bootstrap.ApplyOnlineState(engine);
+            if (_incoming.Count >= MaxQueuedStates)
+            {
+                _incoming.Dequeue();
+            }
+
+            _incoming.Enqueue(state);
+            PumpStates();
+        }
+
+        private void PumpStates()
+        {
+            GameBootstrap bootstrap = Bootstrap;
+            if (bootstrap == null)
+            {
+                return;
+            }
+
+            if (_holdUntil > 0f)
+            {
+                if (Time.unscaledTime < _holdUntil)
+                {
+                    return;
+                }
+
+                _holdUntil = 0f;
+                if (bootstrap.DiceView != null)
+                {
+                    bootstrap.DiceView.ClearCaption();
+                }
+            }
+
+            while (_incoming.Count > 0)
+            {
+                MatchStateDto next = _incoming.Dequeue();
+                if (next == null || next.StateVersion < _appliedVersion)
+                {
+                    continue;
+                }
+
+                bool opponentTurn = IsOpponentTurn(next);
+                if (opponentTurn && bootstrap.DiceView != null && next.Dice != null)
+                {
+                    // Baslik durum uygulanmadan once yazilir; RefreshViews zar panelini
+                    // bu baslikla birlikte cizer.
+                    bootstrap.DiceView.SetCaption("rakip: " + next.Dice.Die1 + "-" + next.Dice.Die2);
+                }
+
+                ApplyStateNow(next);
+
+                if (opponentTurn)
+                {
+                    _holdUntil = Time.unscaledTime + OpponentDiceSeconds;
+                    return;
+                }
+            }
+        }
+
+        /// <summary>Durum rakibin turunu mu anlatiyor (zari atilmis, oynanmamis)?</summary>
+        private bool IsOpponentTurn(MatchStateDto state)
+        {
+            GameBootstrap bootstrap = Bootstrap;
+            if (bootstrap == null || state == null || state.Phase != MatchPhase.Playing)
+            {
+                return false;
+            }
+
+            if (state.Turn == CheckerColor.None || state.Dice == null)
+            {
+                return false;
+            }
+
+            if (state.Dice.Remaining == null || state.Dice.Remaining.Length == 0)
+            {
+                // Zar atilmis ama oynanmis: gosterilecek bir sey yok.
+                return false;
+            }
+
+            return OnlineBoardAdapter.ToEngineColor(state.Turn) != bootstrap.HumanPlayer;
+        }
+
+        private void ApplyStateNow(MatchStateDto state)
+        {
+            GameBootstrap bootstrap = Bootstrap;
+            if (bootstrap == null || state == null)
+            {
+                return;
+            }
+
+            _appliedVersion = state.StateVersion;
+
+            BackgammonState engine = OnlineBoardAdapter.FromState(state, bootstrap.HumanPlayer);
+            bootstrap.SetOnlineInputLocked(_submitting);
+            bootstrap.ApplyOnlineState(engine);
 
             // The server auto-passes a turn whose player has no legal move at all
             // (e.g. on the bar against a closed home board). The client never
             // submits an empty turn itself; it only explains the waiting.
-            GameOrchestrator orchestrator = _bootstrap.Orchestrator;
+            GameOrchestrator orchestrator = bootstrap.Orchestrator;
             bool blockedByOpponent = state.Phase == MatchPhase.Playing &&
                                      orchestrator != null &&
-                                     orchestrator.State.turn == _bootstrap.HumanPlayer &&
+                                     orchestrator.State.turn == bootstrap.HumanPlayer &&
                                      orchestrator.State.phase == GamePhase.Moving &&
                                      orchestrator.State.remainingCount > 0 &&
                                      !orchestrator.HasLegalMoves;
@@ -621,7 +902,9 @@ namespace TavlaAI.Online
 
             if (_offlineButton != null)
             {
-                _offlineButton.interactable = !_busy;
+                // Cikis her zaman denenebilir olmali: kapanma takildiginda dugme pasif
+                // kalirsa oyuncu cevrimici moddan hic cikamaz.
+                _offlineButton.interactable = true;
             }
         }
 
